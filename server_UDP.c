@@ -19,24 +19,20 @@
 #define maxline 1024
 
 int sd;				        //socket descriptor
+int len;
+char buffer[maxline];
 struct sockaddr_in sad;		//struttura per l'indirizzo IP locale e numero di porta locale
-DIR *dir;					//descrittore del flusso di directory del server
 struct dirent *dp;			//struttura per la gestione dei file del server
+DIR *dir;					//descrittore del flusso di directory del server
 
-int main(int argc, char *argv[1]) {
-	int result, len;
+void func_list();
+void func_put();
+void func_get();
+
+int main(int argc, char *argv[]) {
+	int result;
 	int fd;					//file descriptor
-	char buffer[maxline];	//buffer contenente i messaggi di richiesta e di risposta
-	char *pathname;			//nome del percorso per il file
 	size_t val;
-
-	//allocazione di memoria oer la variabile richiesta nel comando GET
-
-	pathname = (char *)malloc(256);
-	if(pathname == NULL) {
-		perror("errore, allocazione di memoria fallita\n");
-		exit(-1);
-	}
 
 	//creazione della socket per il processo server (usata solo per l'ascolto di richieste)
 
@@ -62,6 +58,7 @@ int main(int argc, char *argv[1]) {
 	}
 
 	//fase di attesa di richieste da parte dei client UDP e invio risposte
+	printf("-----server in attesa di richieste-----\n");
 
 	while(1) {
 		len = sizeof(sad);
@@ -79,115 +76,212 @@ int main(int argc, char *argv[1]) {
 		if(strcmp("list", buffer) == 0) {
 			printf("richiesta della lista dei file nel server\n");
 
-			memset(buffer, 0, sizeof(buffer));					//svuotamento del buffer
-
-			if ((dir = opendir ("server UDP")) == NULL) {		//controllo dei file presenti all'interno del server 
-        		perror ("errore, lettura file nel server fallita\n");
-        		exit (-1);
-    		}
-			
-			while ((dp = readdir (dir)) != NULL) {				//lettura della directory appena creata contenente i nomi dei file
-        		if(dp->d_type == DT_REG) {						//controllo del tipo di elemento da inserire nel buffer
-            		strcat(buffer, dp->d_name);					//inserimento del file i-esimo all'interno del buffer
-            		strcat(buffer, ", ");				
-        		}
-        	}
-
-        	closedir(dir);										//chiusura della directory dir
-
-        	//invio della risposta al client che ne ha fatto richiesta
-
-			result = sendto(sd, buffer, strlen(buffer)+1, 0, (struct sockaddr *)&sad, sizeof(sad));
-			if(result == -1) {
-				perror("errore, invio risposta fallito\n");
-				exit(-1);
-			}
+			func_list();
 		}
 
 		//comando PUT
 
 		else if(strcmp("put", buffer) == 0) {
-			printf("creazione del file\n");
+			printf("richiesta la scrittura di un file sul server\n");
 
+			func_put();
 		}
 
 		//comando GET
 
-		else {
-			//controllo la presenza del file richiesto dal client scorrendo la lista dei file del server
-			printf("richiesta lettura del contenuto di '%s'\n", buffer);
+		else if (strcmp("get", buffer) == 0) {
+			printf("richiesta la lettura di un file del server\n");
 
-			if ((dir = opendir ("server UDP")) == NULL) {				//controllo dei file presenti all'interno del server 
-        		perror ("errore, lettura file nel server fallita\n");
-        		exit (-1);
-    		}
-
-			result = 0;													 //impongo variabile per definire la presenza o meno del file
-
-			while ((dp = readdir (dir)) != NULL) {						 //lettura della directory appena creata contenente i nomi dei file
-        		if(dp->d_type == DT_REG) {								 //controllo del tipo di elemento da inserire nel buffer
-            		if(strcmp(dp->d_name, buffer) == 0) {				 //controllo se file richiesto è presente nel server
-
-            			result = 1;
-
-            			strcpy(pathname, "server UDP/");
-            			strcat(pathname, dp->d_name);
-
-            			fd = open(pathname, O_RDONLY, 0660);	 		 //apertura del file richiesto dal client
-            			if(fd == -1) {
-            				perror("errore, apertura del file fallita\n");
-            				exit(-1);
-            			}
-            			else {
-            				memset(buffer, 0, sizeof(buffer));			 //svuotamento del buffer
-
-            				val = read(fd, buffer, (maxline-1));		 //lettura dei dati dal file ed inserimento del buffer
-
-            				if(val == -1) {
-            					perror("errore, lettura fallita\n");
-            					exit(-1);
-            				}
-        					else {
-        						result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
-        						if(result == -1) {
-									perror("errore, invio risposta fallito\n");
-									exit(-1);
-								}
-   							}
-
-   							if(strlen(buffer) >= (maxline-1)){
-
-   								//il file non è stato completamente inviato con un solo messaggio
-
-   								while(strlen(buffer) == (maxline-1)) {			 //finchè il buffer si riempie
-   									memset(buffer, 0, sizeof(buffer));			 //svuotamento del buffer
-
-   									if(read(fd, buffer, (maxline-1)) == -1) {    //lettura dei dati dal file ed inserimento del buffer
-            							perror("errore, lettura fallita\n");
-            							exit(-1);
-            						}
-									result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
-        							if(result == -1) {
-										perror("errore, invio risposta fallito\n");
-										exit(-1);
-									}
-   								}	
-   							}
-   						}
-            		}
-        		}
-        	}
-        	if(result == 0) {
-        		//caso in cui il file non è presente nel server e viene inviato un buffer vuoto
-
-        		result = sendto(sd, NULL, 0, 0, (struct sockaddr *)&sad, sizeof(sad));
-        		if(result == -1) {
-        			perror("errore, invio risposta fallito\n");
-        			exit(-1);
-        		}
-			}
-        	closedir(dir);												 //chiusura della directory dir
+			func_get();
 		}
 	}
 	return(0);
+}
+
+void func_list() {
+	int result;
+
+	memset(buffer, 0, sizeof(buffer));					//svuotamento del buffer
+
+	if ((dir = opendir ("server UDP")) == NULL) {		//controllo dei file presenti all'interno del server 
+        perror ("errore, lettura file nel server fallita\n");
+        exit (-1);
+    }
+			
+	while ((dp = readdir (dir)) != NULL) {				//lettura della directory appena creata contenente i nomi dei file
+        if(dp->d_type == DT_REG) {						//controllo del tipo di elemento da inserire nel buffer
+
+            strcat(buffer, dp->d_name);					//inserimento del file i-esimo all'interno del buffer
+            strcat(buffer, "\n");				
+        }
+
+        if(strlen(buffer) == (maxline-1)) {				//quando il buffer è pieno lo si invia al client e si svuota
+        	result = sendto(sd, buffer, strlen(buffer)+1, 0, (struct sockaddr *)&sad, sizeof(sad));
+			if(result == -1) {
+				perror("errore, invio risposta fallito\n");
+				exit(-1);
+			}
+			memset(buffer,0,sizeof(buffer));			//svuotamento del buffer
+		}			
+    }
+
+    closedir(dir);										//chiusura della directory dir
+
+    //invio della risposta al client che ne ha fatto richiesta
+
+	result = sendto(sd, buffer, strlen(buffer)+1, 0, (struct sockaddr *)&sad, sizeof(sad));
+	if(result == -1) {
+		perror("errore, invio risposta fallito\n");
+		exit(-1);
+	}
+}
+
+void func_put() {
+	int result, fd;
+
+	memset(buffer, 0, sizeof(buffer));
+
+	result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);       //ricezione nome del file dal client
+	if(result == -1) {
+		perror("errore, ricezione richiesta fallita\n");
+		exit(-1);
+	}
+	else if(result == 0) {
+		//caso in cui il file non è presente nel client
+	}
+	else {
+		fd = open(buffer, O_CREAT|O_RDWR, 0666);							//creazione del file sul server
+		if(fd == -1) {
+			perror("errore, creazione file fallita\n");
+			exit(-1);
+		}
+
+		memset(buffer, 0, sizeof(buffer));
+
+		result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);	//ricezione contenuto da inserire nel file creato
+		if(result == -1) {
+			perror("errore, ricezione contenuto file fallito\n");
+			exit(-1);
+		}
+
+		if(write(fd, buffer, strlen(buffer)) == -1) {								//scrittura del contenuto sul file creato
+			perror("errore, scrittura sul file fallita\n");
+			exit(-1);
+		}
+
+		if(strlen(buffer) >= (maxline-1)) {
+			//il file non è stato completamente ricevuto con un solo messaggio
+
+  			while(strlen(buffer) == (maxline-1)) {			 //finchè il buffer si riempie
+   				memset(buffer, 0, sizeof(buffer));			 //svuotamento del buffer
+
+   				result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
+				if(result == -1) {
+					perror("errore, ricezione contenuto file fallito\n");
+					exit(-1);
+				}
+
+   				if(write(fd, buffer, strlen(buffer)) == -1) {    //lettura dei dati dal file ed inserimento del buffer
+            		perror("errore, lettura fallita\n");
+            		exit(-1);
+   				}	
+   			}
+   		}
+	}
+}
+
+void func_get() {
+	int result, fd;
+	char *pathname;
+	size_t val;
+
+	//allocazione di memoria per la variabile richiesta nel comando GET
+
+	pathname = (char *)malloc(124);
+	if(pathname == NULL) {
+		perror("errore, allocazione di memoria fallita\n");
+		exit(-1);
+	}
+	memset(buffer, 0, sizeof(buffer));
+
+	//ricezione nome del file da leggere
+	len = sizeof(sad);
+	result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
+	if(result == -1) {
+		perror("errore, nome file non ricevuto\n");
+		exit(-1);
+	}
+
+	if ((dir = opendir ("server UDP")) == NULL) {				//controllo dei file presenti all'interno del server 
+    	perror ("errore, lettura file nel server fallita\n");
+        exit (-1);
+    }
+
+	result = 0;											//impongo variabile per definire la presenza o meno del file
+
+	while ((dp = readdir (dir)) != NULL) {				//lettura della directory appena creata contenente i nomi dei file
+        if(dp->d_type == DT_REG) {						//controllo del tipo di elemento da inserire nel buffer
+
+        	if(strcmp(dp->d_name, buffer) == 0) {		//controllo se file richiesto è presente nel server
+
+        		result = 1;
+
+        		strcpy(pathname, "server UDP/");
+        		strcat(pathname, dp->d_name);
+
+        		fd = open(pathname, O_RDONLY, 0660);	 		 		//apertura del file richiesto dal client
+        		if(fd == -1) {
+            		perror("errore, apertura del file fallita\n");
+            		exit(-1);
+        		}
+        		free(pathname);
+
+            	memset(buffer, 0, sizeof(buffer));			 		//svuotamento del buffer
+
+            	val = read(fd, buffer, (maxline-1));		 		//lettura dei dati dal file ed inserimento del buffer
+
+            	if(val == -1) {
+            		perror("errore, lettura fallita\n");
+            		exit(-1);
+            	}
+        		else {
+        			result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
+        			if(result == -1) {
+						perror("errore, invio risposta fallito\n");
+						exit(-1);
+					}
+   				}
+
+   				if(strlen(buffer) >= (maxline-1)){
+				//il file non è stato completamente inviato con un solo messaggio
+
+   					while(strlen(buffer) == (maxline-1)) {			 //finchè il buffer si riempie
+   						memset(buffer, 0, sizeof(buffer));			 //svuotamento del buffer
+
+   						if(read(fd, buffer, (maxline-1)) == -1) {    //lettura dei dati dal file ed inserimento del buffer
+            				perror("errore, lettura fallita\n");
+            				exit(-1);
+            			}
+
+						result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
+        				if(result == -1) {
+							perror("errore, invio risposta fallito\n");
+							exit(-1);
+						}
+   					}	
+   				}
+   			}
+    	}
+    }
+    closedir(dir);						//chiusura della directory dir
+
+    if(result == 0) {
+       	//caso in cui il file non è presente nel server e viene inviato un buffer vuoto
+
+        result = sendto(sd, NULL, 0, 0, (struct sockaddr *)&sad, sizeof(sad));
+        if(result == -1) {
+        	perror("errore, invio risposta fallito\n");
+        	exit(-1);
+        }
+	}
 }
