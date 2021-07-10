@@ -15,15 +15,19 @@
 #include <dirent.h>			//librerie per l'implementazione del comando "list"
 #include <libgen.h>
 
+#include <signal.h>
+#include <sys/wait.h>
+
 #define portnumber 2021
 #define maxline 1024
 
 int sd;				        //socket descriptor
-int len;
+int len, status;
 char buffer[maxline];
 struct sockaddr_in sad;		//struttura per l'indirizzo IP locale e numero di porta locale
 struct dirent *dp;			//struttura per la gestione dei file del server
 DIR *dir;					//descrittore del flusso di directory del server
+pid_t pid;
 
 void func_list();
 void func_put();
@@ -74,25 +78,95 @@ int main(int argc, char *argv[]) {
 		//comando LIST
 
 		if(strcmp("list", buffer) == 0) {
-			printf("richiesta della lista dei file nel server\n");
+			//creazione processi figli per la gestione delle richieste
+			pid = fork();
 
-			func_list();
+			if(pid == -1) {
+				perror("errore, creazione processo figlio fallito\n");
+				exit(-1);
+			}
+
+			else if(pid == 0) {
+				printf("processo figlio in esecuzione\n");
+				printf("richiesta della lista dei file nel server\n(processo server figlio %d)\n", getpid());
+				func_list();
+				exit(0);
+			}
+			else {
+				printf("processo padre, attesa terminazione processo figlio\n");
+				wait(&status);
+			}
 		}
 
 		//comando PUT
 
 		else if(strcmp("put", buffer) == 0) {
-			printf("richiesta la scrittura di un file sul server\n");
+			//creazione processi figli per la gestione delle richieste
 
-			func_put();
+			memset(buffer, 0, sizeof(buffer));
+
+			result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);       //ricezione nome del file dal client
+			if(result == -1) {
+				perror("errore, ricezione richiesta fallita\n");
+				exit(-1);
+			}
+			else {
+				//caso in cui il file è presente nel client
+				pid = fork();
+
+				if(pid == -1) {
+					perror("errore, creazione processo figlio fallito\n");
+					exit(-1);
+				}
+
+				else if(pid == 0) {
+					printf("processo figlio in esecuzione\n");
+					printf("richiesta la scrittura di un file sul server\n(processo server figlio %d)\n", getpid());
+					func_put();
+					exit(0);
+				}
+				else {
+				printf("processo padre, attesa terminazione processo figlio\n");
+				wait(&status);
+				}
+			}
 		}
 
 		//comando GET
 
 		else if (strcmp("get", buffer) == 0) {
-			printf("richiesta la lettura di un file del server\n");
+			//creazione processi figli per la gestione delle richieste
 
-			func_get();
+			memset(buffer, 0, sizeof(buffer));
+
+			//ricezione nome del file da leggere
+			len = sizeof(sad);
+
+			result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
+			if(result == -1) {
+				perror("errore, nome file non ricevuto\n");
+				exit(-1);
+			}
+
+			pid = fork();
+
+			if(pid == -1) {
+				perror("errore, creazione processo figlio fallito\n");
+				exit(-1);
+			}
+
+			else if(pid == 0) {
+				printf("socket processo padre: %d\n", sd);
+				printf("processo figlio in esecuzione\n");
+				printf("richiesta lettura di un file del server\n(processo server figlio %d)\n", getpid());
+				func_get();
+				exit(0);
+			}
+			else {
+				printf("socket processo padre: %d\n", sd);
+				printf("processo padre, attesa terminazione processo figlio\n");
+				wait(&status);
+			}
 		}
 	}
 	return(0);
@@ -102,6 +176,8 @@ void func_list() {
 	int result;
 
 	memset(buffer, 0, sizeof(buffer));					//svuotamento del buffer
+
+	sleep(10);
 
 	if ((dir = opendir ("server UDP")) == NULL) {		//controllo dei file presenti all'interno del server 
         perror ("errore, lettura file nel server fallita\n");
@@ -139,55 +215,45 @@ void func_list() {
 void func_put() {
 	int result, fd;
 
-	memset(buffer, 0, sizeof(buffer));
+	sleep(10);
 
-	result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);       //ricezione nome del file dal client
-	if(result == -1) {
-		perror("errore, ricezione richiesta fallita\n");
+	fd = open(buffer, O_CREAT|O_RDWR, 0666);							//creazione del file sul server
+	if(fd == -1) {
+		perror("errore, creazione file fallita\n");
 		exit(-1);
 	}
-	else if(result == 0) {
-		//caso in cui il file non è presente nel client
+
+	memset(buffer, 0, sizeof(buffer));
+
+	result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);	//ricezione contenuto da inserire nel file creato
+	if(result == -1) {
+		perror("errore, ricezione contenuto file fallito\n");
+		exit(-1);
 	}
-	else {
-		fd = open(buffer, O_CREAT|O_RDWR, 0666);							//creazione del file sul server
-		if(fd == -1) {
-			perror("errore, creazione file fallita\n");
-			exit(-1);
-		}
 
-		memset(buffer, 0, sizeof(buffer));
+	if(write(fd, buffer, strlen(buffer)) == -1) {								//scrittura del contenuto sul file creato
+		perror("errore, scrittura sul file fallita\n");
+		exit(-1);
+	}
 
-		result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);	//ricezione contenuto da inserire nel file creato
-		if(result == -1) {
-			perror("errore, ricezione contenuto file fallito\n");
-			exit(-1);
-		}
+	if(strlen(buffer) >= (maxline-1)) {
+		//il file non è stato completamente ricevuto con un solo messaggio
 
-		if(write(fd, buffer, strlen(buffer)) == -1) {								//scrittura del contenuto sul file creato
-			perror("errore, scrittura sul file fallita\n");
-			exit(-1);
-		}
+  		while(strlen(buffer) == (maxline-1)) {			 //finchè il buffer si riempie
+   			memset(buffer, 0, sizeof(buffer));			 //svuotamento del buffer
 
-		if(strlen(buffer) >= (maxline-1)) {
-			//il file non è stato completamente ricevuto con un solo messaggio
+   			result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
+			if(result == -1) {
+				perror("errore, ricezione contenuto file fallito\n");
+				exit(-1);
+			}
 
-  			while(strlen(buffer) == (maxline-1)) {			 //finchè il buffer si riempie
-   				memset(buffer, 0, sizeof(buffer));			 //svuotamento del buffer
-
-   				result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
-				if(result == -1) {
-					perror("errore, ricezione contenuto file fallito\n");
-					exit(-1);
-				}
-
-   				if(write(fd, buffer, strlen(buffer)) == -1) {    //lettura dei dati dal file ed inserimento del buffer
-            		perror("errore, lettura fallita\n");
-            		exit(-1);
-   				}	
-   			}
+   			if(write(fd, buffer, strlen(buffer)) == -1) {    //lettura dei dati dal file ed inserimento del buffer
+            	perror("errore, lettura fallita\n");
+            	exit(-1);
+   			}	
    		}
-	}
+   	}
 }
 
 void func_get() {
@@ -197,18 +263,11 @@ void func_get() {
 
 	//allocazione di memoria per la variabile richiesta nel comando GET
 
+	sleep(10);
+
 	pathname = (char *)malloc(124);
 	if(pathname == NULL) {
 		perror("errore, allocazione di memoria fallita\n");
-		exit(-1);
-	}
-	memset(buffer, 0, sizeof(buffer));
-
-	//ricezione nome del file da leggere
-	len = sizeof(sad);
-	result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
-	if(result == -1) {
-		perror("errore, nome file non ricevuto\n");
 		exit(-1);
 	}
 

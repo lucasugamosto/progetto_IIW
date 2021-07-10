@@ -164,7 +164,7 @@ void func_get(char *buffer) {
 
 	else if(result == 0) {
 		perror("\nfile non presente nel server\n");
-		}
+	}
 	else {
 		printf("\ndati contenuti nel file richiesto:\n");
 		printf("%s", buffer);											//stampa a schermo del contenuto del file richiesto
@@ -209,6 +209,8 @@ void func_put(char *buffer) {
 	scanf(" %[^\n]", buffer);
 	c = getchar();
 
+	printf("\n");
+
 	if((dir = opendir ("client UDP")) == NULL) {			 //controllo dei file presenti all'interno del client
         perror ("errore, lettura file nel server fallita\n");
         exit (-1);
@@ -238,7 +240,7 @@ void func_put(char *buffer) {
            		strcpy(buffer, "client UDP/");
            		strcat(buffer, dp->d_name);
 
-            	fd = open(buffer, O_RDWR, 0666);
+            	fd = open(buffer, O_RDONLY, 0660);
             	if(fd == -1) {
             		perror("errore, apertura file fallita\n");
             		exit(-1);
@@ -285,12 +287,6 @@ void func_put(char *buffer) {
 
     if(result == 0) {
        	//caso in cui il file non è presente nel client
-
-        result = sendto(sd, NULL, 0, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
-        if(result == -1) {
-        	perror("errore, invio risposta fallito\n");
-        	exit(-1);
-        }
         printf("file '%s' non presente nel client\n", buffer);
 	}
 }
