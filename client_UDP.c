@@ -7,9 +7,11 @@
 #include <fcntl.h>					//libreria per le funzioni riguardanti i file
 #include <sys/stat.h>
 #include <math.h>
+
 #include <time.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <sys/errno.h>
 
 #include <sys/socket.h>				//definisce i parametri che iniziano per PF e AF
 #include <netinet/in.h>				//definisce i tipi di dato per rappresentare gli indirizzi IP in internet
@@ -21,8 +23,10 @@
 #include <libgen.h>					//libreria per l'implementazione del comando "list"
 
 #define standard_port 1024  		//porta iniziale per il collegamento con il processo server
-#define maxline 256					//dimensione massima del buffer
+#define maxline 124					//dimensione massima del buffer
 #define N 4 						//dimensione finestra di ricezione
+#define TIMEOUT 10000   			//tempo dopo il quale arriva il segnale di errore SIGALARM
+#define PROB_PERDITA 50				//probabilità di perdere i pacchetti (in percentuale)
 
 //struttura per la gestione del GO-BACK-N
 typedef struct message_struct {
@@ -34,8 +38,12 @@ int sd;				        		//socket descriptor
 int port_number, len;
 int lunghezza_file, num_message;
 char buffer[maxline];				//buffer contenente i messaggi di richiesta e di risposta
+
 struct sockaddr_in servaddr;		//struttura per l'indirizzo IP locale e numero di porta locale
 struct dirent *dp;					//struttura per la gestione dei file del server
+
+int value_ack;
+
 DIR *dir;							//descrittore del flusso di directory del server
 size_t val;							//variabile per la gestione delle funzioni riguardanti i file
 
@@ -43,8 +51,10 @@ void func_list(char *buffer);
 void func_get(char *buffer);
 void func_put(char *buffer);
 void ricezione_GBN(char *pathname);
-void invio_GBN(message *pack, int num_message, int fd, int *lastByteRead, int lunghezza_file);
+void invio_GBN(message *pack, int num_message, int fd, int lunghezza_file);
 void create_connection(char *buffer, int port_number);
+void setTimeout(double time, int id);
+void invio_ACK(int valore_ack);
 
 int main(int argc, char *argv[]) {
 	int result;
@@ -99,7 +109,7 @@ int main(int argc, char *argv[]) {
 			exit(-1);
 		}
 		else if(result == 0) {
-			perror("errore, nessun comando è stato inserito\n");
+			perror("errore, nessun comando inserito\n");
 			exit(-1);
 		}
 
@@ -149,15 +159,17 @@ void func_list(char *buffer) {
 		}
 		printf("%s", buffer);
 	}
-	printf("file presenti nel server:\n%s", buffer);
-	printf("\n");
+	printf("file presenti nel server:\n%s\n", buffer);
+
+	//svuotamento del buffer
+	memset(buffer, 0, sizeof(buffer));
 }
 
 void func_get(char *buffer) {
 	int result, c;
 	char *pathname;
 
-	//allocazione di memoria per la variabile pathname
+	//allocazione di memoria per la definizione del percorso del file
 	pathname = (char *)malloc(124);
 	if(pathname == NULL) {
 		perror("errore, allocazione di memoria fallita\n");
@@ -175,6 +187,7 @@ void func_get(char *buffer) {
 	memset(buffer, 0, sizeof(buffer));
 	len = sizeof(servaddr);
 
+	//inserimento nel buffer del nome del file da scaricare
 	printf("File da richiedere al server: ");
 	scanf(" %[^\n]", buffer);
 	c = getchar();
@@ -195,8 +208,6 @@ void func_get(char *buffer) {
     
     //funzione per la gestione del GO-BACK-N
     ricezione_GBN(pathname);
-
-    printf("file salvato nel client con successo\n\n");
 }
 
 void func_put(char *buffer) {
@@ -211,6 +222,7 @@ void func_put(char *buffer) {
 	//invio al server il nome del file da salvare
 	memset(buffer, 0, sizeof(buffer));
 
+	//inserimento nel buffer del nome del file da inviare
 	printf("file da scrivere sul server: ");
 	scanf(" %[^\n]", buffer);
 	c = getchar();
@@ -220,12 +232,16 @@ void func_put(char *buffer) {
         perror ("errore, lettura file nel client fallita\n");
         exit (-1);
     }
+    //si è inizializzata la variabile result a 0
+    //se result = 0: file non presente nel client
+    //se result = 1: file presente nel client
     result = 0;
 
 	while ((dp = readdir (dir)) != NULL) {				//lettura della directory appena creata contenente i nomi dei file
         if(dp->d_type == DT_REG) {						//controllo del tipo di elemento da inserire nel buffer
-            if(strcmp(dp->d_name, buffer) == 0) {		//controllo se il file richiesto è presente nel server
+            if(strcmp(dp->d_name, buffer) == 0) {		//controllo se il file richiesto è presente nel client
 
+            	//variabile impostata per indicare che il file è presente nel client
             	result = 1;
             	memset(buffer, 0, sizeof(buffer));
 
@@ -255,11 +271,22 @@ void func_put(char *buffer) {
                 //calcolo lunghezza del file da inviare
                 lunghezza_file = lseek(fd, 0, SEEK_END);
 
+                //inserimento nel buffer della lunghezza del file da inviare
+                memset(buffer, 0, sizeof(buffer));
+                sprintf(buffer, "%d", lunghezza_file);
+
+                //invio informazioni sulla lunghezza del file al client
+                result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
+                if(result == -1) {
+                	perror("errore, invio lunghezza del file fallito\n");
+                	exit(-1);
+                }
+
                 //riposizionamento del puntatore all'inizio del file per la futura lettura
                 lseek(fd, 0, SEEK_SET);
 
                 //calcolo il numero di pacchetti da dover inviare
-                num_message = ceil(lunghezza_file/(maxline-1)) + 1;
+                num_message = ceil(lunghezza_file/maxline)+1;
 
                 //inserimento nel buffer del numero di pacchetti da inviare
                 memset(buffer, 0, sizeof(buffer));
@@ -276,12 +303,6 @@ void func_put(char *buffer) {
                 memset(buffer, 0, sizeof(buffer));
 
                 message pack[num_message];			//inizializzazione delle strutture 'message'
-                int lastByteRead[num_message];		//array contenente il valore dell'ultimo byte di ogni messaggio
-
-                //pulizia dei campi dell'array lastByteRead
-                for(int i = 0; i < num_message; i++) {
-                    lastByteRead[i] = 0;
-                }
 
                 //pulizia dei campi di ogni struttura allocata
                 for(int i = 0; i < num_message; i++) {
@@ -290,20 +311,29 @@ void func_put(char *buffer) {
                 }
             	
             	//funzione utilizzata per l'invio dei pacchetti al server
-                invio_GBN(pack, num_message, fd, lastByteRead, lunghezza_file);
+                invio_GBN(pack, num_message, fd, lunghezza_file);
+
+                //chiusura del descrittore del file precedentemente aperto
+            	close(fd);
             }
         }
     }
-    //chiusura del descrittore del file e della directory dir
-    close(fd);
-    closedir(dir);
-
     if(result == 0) {
        	//caso in cui il file non è presente nel client
-        printf("file '%s' non presente nel client\n", buffer);
+        printf("file non presente nel client\n\n");
+
+        result = sendto(sd, NULL, 0, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
+        if(result == -1) {
+        	perror("errore, invio informazioni al server fallita (put)\n");
+        	exit(-1);
+        }
 	}
 
-	printf("file salvato nel server\n\n");
+	//chiusura della directory dir per lo scorrimento e analisi dei file
+    closedir(dir);
+
+	//svuotamento del buffer
+	memset(buffer, 0, sizeof(buffer));
 }
 
 /*funzione usata all'interno della funzione 'GET' per la ricezione del file in arrivo dal processo server*/
@@ -311,9 +341,10 @@ void ricezione_GBN(char *pathname) {
     int seq_window = 0;
     int valore_atteso = 0;				//valore dell'ultimo byte letto del messaggio atteso
     int lastAckCorrect = 0;				//valore ack dell'ultimo byte ricevuto in ordine
-    int lunghezza_file;					//quantità di byte di cui si compone il messaggio da ricevere dal server
     int prob_rvd_file;					//probabilità di ricezione del pacchetto dal server
+    int lastByteReceived = 0;			//valore dell'ultimo byte dell'ultimo messaggio ricevuto
     int fd, i, result;
+    int count_retransmit = 0;			//variabile per il conteggio delle ritrasmissioni effettuate
     time_t t;							//variabile per la generazione del valore randomico
 
     //inizializzazione del genereatore di numeri random
@@ -322,31 +353,32 @@ void ricezione_GBN(char *pathname) {
     //svuotamento del buffer
     memset(buffer, 0, sizeof(buffer));
 
-    //ricezione della lunghezza del file da ricevere
+    //ricezione della lunghezza del file da ricevere o NULL in caso file non presente nel server
     result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, &len);
     if(result == -1) {
     	perror("errore, ricezione lunghezza del file fallito\n");
     	exit(-1);
     }
-    //lunghezza del file da ricevere dal client
-    lunghezza_file = atoi(buffer);
-
-    //svuotamento del buffer
-    memset(buffer, 0, sizeof(buffer));
-
-    //ricezione del numero di messaggi da ricevere in totale
-    result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, &len);
-    if(result == -1) {
-    	perror("errore, ricezione numero di pacchetti fallito\n");
-    	exit(-1);
-    }
     else if(result == 0) {
     	//caso in cui il file non è presente sul server
-    	printf("file richiesto non presente nel server\n");
+    	printf("file richiesto non presente nel server\n\n");
     }
 
     else {
     	//caso in cui il file è presente sul server
+
+    	//lunghezza del file da ricevere dal client
+    	lunghezza_file = atoi(buffer);
+
+    	//svuotamento del buffer
+    	memset(buffer, 0, sizeof(buffer));
+
+    	//ricezione del numero di messaggi da ricevere in totale
+    	result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, &len);
+    	if(result == -1) {
+    		perror("errore, ricezione numero di pacchetti fallito\n");
+    		exit(-1);
+    	}
 
     	//creazione e apertura del file per lettura/scrittura
     	fd = open(pathname, O_CREAT|O_RDWR, 0666);
@@ -375,9 +407,10 @@ void ricezione_GBN(char *pathname) {
 		i = 0;
 
 		while(i < num_message) {
+LOOP:
+			printf("\nValore di NUM_MESSAGE: %d\n", num_message);
+			printf("Valore di LUNGHEZZA_FILE:%d\n", lunghezza_file);
 
-			printf("valore di i: %d\n", i);
-			
 			//ricezione del contenuto del messaggio i-esimo
 			result = recvfrom(sd, pack[i].message_buffer, maxline, 0, (struct sockaddr *)&servaddr, &len);
 			if(result == -1) {
@@ -394,32 +427,32 @@ void ricezione_GBN(char *pathname) {
 					exit(-1);
 				}
 				else {
-					//salvataggio del valore dell'ultimo byte nella struttura dedicata
-					pack[i].message_pointer = atoi(buffer);
+					//salvataggio del valore dell'ultimo byte nella variabile dedicata
+					lastByteReceived = atoi(buffer);
+
+					printf("\nlastByteReceived: %d\n", lastByteReceived);
 
 					valore_atteso = (maxline * (i+1));		//valore dell'ultimo byte associato al messaggio i-esimo atteso
 
 					if(valore_atteso < lunghezza_file) {
-						//caso in cui non si ricevono messaggi precedenti all'ultimo
-						printf("valore_atteso (lato client): %d\n", valore_atteso);
+						//caso in cui si ricevono messaggi precedenti all'ultimo
 
 						//controllo esattezza ordine del messaggio ricevuto
-						if(valore_atteso == pack[i].message_pointer) {
+						if(lastByteReceived == valore_atteso) {
 							//pacchetti arrivato con successo è quello in ordine
-
-							printf("pack[%d].message_pointer: %d\n", i, pack[i].message_pointer);
+							count_retransmit = 0;
 
 							//calcolo probabilità di perdita del pacchetto (mancata scrittura nel file)
 							prob_rvd_file = (rand() % 100);
-							printf("probabilità di ricezione del messaggio %d: %d\n", i, prob_rvd_file);
 
-							if(prob_rvd_file < 50) {
+							if(prob_rvd_file < PROB_PERDITA) {
 								/*caso in cui si considera il messaggio non arrivato e quindi
 								non viene inviato nessun ack di risposta al server*/
-								printf("messaggio %d perso, invio ack associato fallito\n", i);
-
+								printf("messaggio n°.%d PERSO\n", i);
+								
 								goto ACK_PERSO;
 							}
+							printf("messaggio n°.%d ARRIVATO\n", i);
 
 							//inserimento del messaggio i-esimo all'interno del file creato nel client
 							val = write(fd, pack[i].message_buffer, strlen(pack[i].message_buffer));
@@ -428,60 +461,50 @@ void ricezione_GBN(char *pathname) {
 								exit(-1);
 							}
 
-							//assegnazione del valore dell'ultimo byte alla variabile di ack
-							lastAckCorrect = pack[i].message_pointer + 1;
-
-							printf("lastAckCorrect da inviare al server: %d\n", lastAckCorrect);
+							//assegnazione del valore del prossimo byte da ricevere alla variabile di ack
+							lastAckCorrect = lastByteReceived + 1;
 
 							//invio ack relativo all'ultimo messaggio ricevuto in ordine
-							memset(buffer, 0, sizeof(buffer));
-							sprintf(buffer, "%d", lastAckCorrect);
+							invio_ACK(lastAckCorrect);
 
-							//invio ack per conferma dell'ordine corretto di arrivo dei pacchetti al server
-							result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
-							if(result == -1) {
-								perror("errore, invio dell'ack al server fallito\n");
-								exit(-1);
-							}
-							else {
-								memset(buffer, 0, sizeof(buffer));
-								i++;
-								seq_window++;
-							}
+							//incremento della variabile per la ricezione del successivo messaggio
+							i++;
+
+							goto LOOP;
 						}
 						else {
 							//pacchetto arrivato con successo non è quello in ordine
 							//si scarta il pacchetto arrivato e si manda al server l'ack del pacchetto desiderato
 
-							printf("pack[%d].message_pointer: %d\n", i, pack[i].message_pointer);
+							if(lastByteReceived%maxline == 0) {
+								printf("messaggio n°.%d SCARTATO\n", (lastByteReceived/maxline)-1);
+							}
+							else if(lastByteReceived%maxline > 0) {
+								printf("messaggio n°.%d SCARTATO\n", (lastByteReceived/maxline));
+							}
 							
 							//invio ack relativo all'ultimo messaggio ricevuto in ordine
-							memset(buffer, 0, sizeof(buffer));
-							sprintf(buffer, "%d", lastAckCorrect);
-
-							//invio ack per conferma dell'ordine corretto di arrivo dei pacchetti al server
-							result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
-							if(result == -1) {
-								perror("errore, invio dell'ack al server fallito\n");
-								exit(-1);
+							if(count_retransmit < 3) {
+								invio_ACK(lastAckCorrect);
+								count_retransmit++;
 							}
 							else {
-								memset(buffer, 0, sizeof(buffer));
+								//già sono stati inviati 3 ack duplicati
+								goto LOOP;
 							}
 						}
 					}
 					else {
-						printf("atteso ultimo pacchetto che compone il file\n");
-						printf("pack[%d].message_pointer: %d\n", i, pack[i].message_pointer);
+						//caso in cui si riceve l'ultimo messaggio che compone il file
+						count_retransmit = 0;
 
 						//calcolo probabilità di perdita del pacchetto (mancata scrittura nel file)
 						prob_rvd_file = (rand() % 100);
-						printf("probabilità di ricezione del messaggio %d: %d\n", i, prob_rvd_file);
 
-						if(prob_rvd_file < 50) {
+						if(prob_rvd_file < PROB_PERDITA) {
 							/*caso in cui si considera il messaggio non arrivato e quindi
 							non viene inviato nessun ack di risposta al server*/
-							printf("messaggio %d perso, invio ack associato fallito\n", i);
+							printf("messaggio n°.%d PERSO\n", i);
 
 							goto ACK_PERSO;
 						}
@@ -492,145 +515,214 @@ void ricezione_GBN(char *pathname) {
 							perror("errore, scrittura sul file client fallita\n");
 							exit(-1);
 						}
+						printf("ultimo messaggio n°.%d ARRIVATO\n", i);
 
-						//assegnazione del valore dell'ultimo byte alla variabile di ack
-						lastAckCorrect = pack[i].message_pointer + 1;
+						//assegnazione del valore del successivo byte da inviare alla variabile di ack
+						lastAckCorrect = lastByteReceived + 1;
 
 						//invio ack relativo all'ultimo messaggio ricevuto in ordine
-						memset(buffer, 0, sizeof(buffer));
-						sprintf(buffer, "%d", lastAckCorrect);
+						invio_ACK(lastAckCorrect);
 
-						//invio ack per conferma dell'ordine corretto di arrivo dei pacchetti al server
-						result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
-						if(result == -1) {
-							perror("errore, invio dell'ack al server fallito\n");
-							exit(-1);
-						}
-						else {
-							memset(buffer, 0, sizeof(buffer));
-							i++;
-							seq_window++;
-
-							break;
-						}
+						break;
 					}	
 				}
 			}
 ACK_PERSO:	
-			//non invio nulla al server
-			continue;
+			if(i == 0) {
+				//non invio nulla al server
+				continue;
+			}
+			else {
+				if(count_retransmit < 3) {
+					invio_ACK(lastAckCorrect);
+					count_retransmit++;
+				}
+				else {
+					//già sono stati inviati 3 ack duplicati, non invio altri
+					goto LOOP;
+				}
+			}
 		}
+		//riposizionamento del puntatore all'interno del file
+		//lseek(fd, 0, SEEK_SET);
+
 		//chiusura del file descriptor associato al file creato
 		close(fd);
+
+		printf("----File salvato nel CLIENT con successo----\n\n");
 	}
+	//svuotamento del buffer
+	memset(buffer, 0, sizeof(buffer)+1);
 }
 
-void invio_GBN(message *pack, int num_message, int fd, int *lastByteRead, int lunghezza_file) {
+void invio_GBN(message *pack, int num_message, int fd, int lunghezza_file) {
     int result;
-    int err;
-    int seq_window = 0;
-    int value_ack = 0;
-    int i = 0;
+    int count_ack = 0;			//variabile che tiene traccia del numero di ack ricevuti
+    int seq_window = 0;			//variabile utilizzata per la gestione della finestra di ricezione
+    int fast_retransmit = 0;	//contatore che conta gli ack uguali
+    int ack_prev = 0;			//variabile utilizzata con fast_retransmit per conoscere il valore del precedente ack
+    int i;
 
-    /*inserimento e invio dei dati del file nella sezione message_buffer
+    /*lettura ed inserimento dei dati del file nella sezione message_buffer
     e valore dell'ultimo byte letto nella sezione message_pointer*/
-    while(1) {       	
-SEND:
-    	if(i == num_message) {
-        	i++;
-        	goto WAIT;
-        }
-        else if(i > num_message) {
-            if(value_ack < lunghezza_file) {
-             	goto WAIT;
-            }
-            else {
-                goto END;
-            }        
+    for(i = 0; i < num_message; i++) {
+    	//creazione dei 'num_message' message_buffer
+    	val = read(fd, pack[i].message_buffer, maxline);
+
+    	if(val == -1) {
+            perror("errore, lettura dei dati del file fallita\n");
+            exit(-1);
         }
         else {
-            if(seq_window <= N) {
-           		//lettura dei dati dal file ed inserimento nel buffer
-           		val = read(fd, pack[i].message_buffer, maxline);
+            //inserisco in message_pointer il valore del primo byte letto 
+            if(i == 0) {
+                //caso d'invio del primo pacchetto
+                pack[i].message_pointer = val;
+            }
+            else {
+                //caso d'invio dei pacchetti successivi al primo
+                pack[i].message_pointer = pack[i-1].message_pointer + val;
+            }
+        }
+    }
+    //inizializzo a 0 l'indice per lo scorrimento dei pacchetti
+    i = 0;
+    len = sizeof(servaddr);
+    
+    while(1) {       	
+SEND:
+		
+    	if(i == num_message) {
+        	//caso in cui tutti i pacchetti sono stati inviati
+        	if(value_ack < lunghezza_file) {
+        		//caso in cui non sono arrivati tutti gli ack
+        		goto WAIT; 
+        	}
+            else {
+            	//caso in cui tutti gli ack sono arrivati
+            	goto END;
+            }     
+        }
+        else {
+        	//caso in cui non tutti i pacchetti sono stati inviati (i < num_message)		
+            if(seq_window < N) {
+            	//caso in cui la finestra di ricezione non è piena
+           		
+           		printf("stato di SEND -> invio pacchetto n. %d al server\n", i);
 
-            	if(val == -1) {
-            		perror("errore, lettura dati del file fallita\n");
+            	//invio contenuto del file (pack[i].message_buffer) al server
+            	result = sendto(sd, pack[i].message_buffer, (strlen(pack[i].message_buffer)+1), 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
+
+            	if(result == -1) {
+            		perror("errore, invio messaggio al server (1) fallito\n");
             		exit(-1);
             	}
             	else {
-                    //inserisco in message_pointer il valore dell'ultimo byte letto
-                    if(i == 0) {
-                    	//caso d'invio del primo pacchetto
-                        pack[i].message_pointer = val;
-                    }
-                    else {
-                    	//caso d'invio di pacchetti successivi al primo
-                        pack[i].message_pointer = pack[i-1].message_pointer + val;
-                    }
+            		//invio l'ultimo byte di cui si compone il messaggio inviato
+            		memset(buffer, 0, sizeof(buffer));
+  					sprintf(buffer, "%d", pack[i].message_pointer);
 
-        			//inserisco pack[i].message_pointer nell'array lastByteRead
-        			lastByteRead[i] = pack[i].message_pointer;      					
+  					result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
 
-  					result = sendto(sd, pack[i].message_buffer, (strlen(pack[i].message_buffer)+1), 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
-  							
   					if(result == -1) {
-  						perror("errore, invio messaggio al server fallito\n");
+  						perror("errore, invio messaggio al server (2) fallito\n");
   						exit(-1);
-  					}
-  					else {
-  						//invio valore dell'ultimo byte letto dal messaggio
-  						memset(buffer, 0, sizeof(buffer));
-  						sprintf(buffer, "%d", pack[i].message_pointer);
+            		}
+            		else {
+  						//si fa partire il timeout associato all'ultimo messaggio inviato al server
+                        setTimeout(TIMEOUT, i);
 
-  						result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
-  						if(result == -1) {
-  							perror("errore, invio valore dell'ultimo byte fallito\n");
-  							exit(-1);
-  						}
-  						else {
-  							//incremento della finestra di ricezione
-  							seq_window++;
-                            i++;
-                            goto SEND;
-  						}
+  						//incremento della finestra di ricezione
+  						seq_window++;
+                        i++;
+
+                        //invio pacchetto successivo
+                        goto SEND;
   					}
-                }
-            }
-            else {
+  				}
+  			}
+           	else {
+           		//caso in cui la finestra di ricezione è piena
 WAIT:
-  				//caso in cui la finestra di ricezione è piena
+				printf("stato di WAIT -> attesa di ack n. %d dal server\n", count_ack);
+
   				memset(buffer, 0, sizeof(buffer));
+
+  				//variabile utilizzata per la gestione degli errori (definita nella livreria errno.h)
+  				errno = 0;
 
   				//attesa ack per decrementare la finestra di ricezione
   				result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, &len);
-  								
-  				if(result == -1) {
-  					perror("errore, ricezione valore ack fallito\n");
-  					exit(-1);
+
+  				if(result < 0) {
+  					if(errno == EAGAIN || errno == EWOULDBLOCK) {
+  						printf("Timeout scaduto, eseguire RITRASMISSIONE\n");
+
+  						//calcolo pacchetto dal quale riniziare la trasmissione
+  						i = (value_ack / maxline);
+  						printf("ritrasmissione dal pacchetto n°.%d\n", i);
+
+  						//azzeramento delle variabili usate fino ad ora
+  						fast_retransmit = 0;
+  						seq_window = 0;
+  						errno = 0;
+
+  						goto SEND;
+  					}
   				}
   				else {
+  					//ack ricevuto con successo, controllo il suo valore
   					value_ack = atoi(buffer);
-  					seq_window--;
-  					goto SEND;
+
+  					if(value_ack > ack_prev) {
+  						//arrivo dell'ack successivo desiderato
+
+  						//aggiorno la variabile ack_prev
+  						ack_prev = value_ack;
+
+						//aggiornamento delle variabili per la gestione dei messaggi
+						seq_window--;
+						fast_retransmit = 0;
+						count_ack++;
+
+  						goto SEND;
+  					}
+  					else if(value_ack == ack_prev) {
+  						//arrivo di un ack già ricevuto in passato
+  						
+  						//incremento del contatore per la ritrasmissione veloce
+  						fast_retransmit++;
+
+  						if(fast_retransmit == 3) {
+  							printf("Ricevuti 3 ack duplicati, eseguire FAST RETRANSMIT\n");
+
+  							//calcolo pacchetto dal quale inizia la ritrasmissione
+  							i = (value_ack / maxline);
+  							printf("ritrasmissione dal pacchetto n°.%d\n", i);
+
+  							//aggiorno le variabili locali
+  							fast_retransmit = 0;
+  							seq_window = 0;
+  							count_ack = i;
+
+  							goto SEND;
+  						}
+  						else {
+ 							//caso in cui gli ack duplicati non sono 3
+  							goto SEND;
+  						}
+  					}
   				}
   			}
    		}
     }
 END:
+	printf("fine invio pacchetti al CLIENT\n\n");
 
-    if(value_ack == (lunghezza_file+1)) {
-        memset(buffer, 0, sizeof(buffer));
-
-        printf("tutti i messaggi inviati hanno ricevuto ack\n");
-    }
-    else {
-        memset(buffer, 0, sizeof(buffer));
-
-        printf("non tutti i messaggi inviati hanno ricevuto ack\n");
-	}
+	//svuotamento del buffer
+	memset(buffer, 0, sizeof(buffer)+1);
 }
-
-
+ 
 void create_connection(char *buffer,int port_number) {
     int result;
 
@@ -650,5 +742,32 @@ void create_connection(char *buffer,int port_number) {
 	if(result == 0) {
 		perror("errore, conversione dell'indirizzo IP fallito\n");
 		exit(-1);
-	} 
+	}
+}
+
+void setTimeout(double time, int id) {
+	struct timeval timeout;
+
+	timeout.tv_sec = 0;
+	timeout.tv_usec = TIMEOUT;
+
+	setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+}
+
+void invio_ACK(int valore_ack) {
+	int result;
+
+	memset(buffer, 0, sizeof(buffer));
+	sprintf(buffer, "%d", valore_ack);
+
+	//invio ack per conferma dell'ordine corretto di arrivo dei pacchetti al server
+	result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
+	if(result == -1) {
+		perror("errore, invio dell'ack al server fallito\n");
+		exit(-1);
+	}
+	else {
+		//svuotamento del buffer
+		memset(buffer, 0, sizeof(buffer));
+	}
 }
