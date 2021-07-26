@@ -134,6 +134,8 @@ int main(int argc, char *argv[]) {
 	return(0);
 }
 
+/*funzione utilizzata per la richiesta LIST. Consiste nel creare uno o più buffer
+contenenti i file presente nel server a cui si fa riferimento*/
 void func_list(char *buffer) {
 	int result;
 
@@ -165,6 +167,8 @@ void func_list(char *buffer) {
 	memset(buffer, 0, sizeof(buffer));
 }
 
+/*funzione utilizzata per la richiesta GET. Permette di trasferire un file richiesto dal client
+che è presente all'interno del server*/
 void func_get(char *buffer) {
 	int result, c;
 	char *pathname;
@@ -210,6 +214,8 @@ void func_get(char *buffer) {
     ricezione_GBN(pathname);
 }
 
+/*funzione utilizzata per la richiesta PUT. Permette di inserire un file inviato dal client
+all'interno del server, se e solo se il file è effettivamente presente nel client*/
 void func_put(char *buffer) {
 	int result, c, fd;
 
@@ -336,7 +342,8 @@ void func_put(char *buffer) {
 	memset(buffer, 0, sizeof(buffer));
 }
 
-/*funzione usata all'interno della funzione 'GET' per la ricezione del file in arrivo dal processo server*/
+/*funzione utilizzata da 'func_get' per inserire il file ricevuto dal server nel client e per inviare al server
+informazioni sullo stato degli ack*/
 void ricezione_GBN(char *pathname) {
     int seq_window = 0;
     int valore_atteso = 0;				//valore dell'ultimo byte letto del messaggio atteso
@@ -408,8 +415,6 @@ void ricezione_GBN(char *pathname) {
 
 		while(i < num_message) {
 LOOP:
-			printf("\nValore di NUM_MESSAGE: %d\n", num_message);
-			printf("Valore di LUNGHEZZA_FILE:%d\n", lunghezza_file);
 
 			//ricezione del contenuto del messaggio i-esimo
 			result = recvfrom(sd, pack[i].message_buffer, maxline, 0, (struct sockaddr *)&servaddr, &len);
@@ -543,9 +548,6 @@ ACK_PERSO:
 				}
 			}
 		}
-		//riposizionamento del puntatore all'interno del file
-		//lseek(fd, 0, SEEK_SET);
-
 		//chiusura del file descriptor associato al file creato
 		close(fd);
 
@@ -555,6 +557,8 @@ ACK_PERSO:
 	memset(buffer, 0, sizeof(buffer)+1);
 }
 
+/*funzione utilizzata da 'func_put' per inviare alla funzione server il file da salvare nella cartella
+associata e per gestire la ricezione degli ack ricevuti dal server*/
 void invio_GBN(message *pack, int num_message, int fd, int lunghezza_file) {
     int result;
     int count_ack = 0;			//variabile che tiene traccia del numero di ack ricevuti
@@ -608,7 +612,7 @@ SEND:
             if(seq_window < N) {
             	//caso in cui la finestra di ricezione non è piena
            		
-           		printf("stato di SEND -> invio pacchetto n. %d al server\n", i);
+           		printf("stato di SEND -> invio pacchetto n.%d al server\n", i);
 
             	//invio contenuto del file (pack[i].message_buffer) al server
             	result = sendto(sd, pack[i].message_buffer, (strlen(pack[i].message_buffer)+1), 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
@@ -644,7 +648,7 @@ SEND:
            	else {
            		//caso in cui la finestra di ricezione è piena
 WAIT:
-				printf("stato di WAIT -> attesa di ack n. %d dal server\n", count_ack);
+				printf("stato di WAIT -> attesa di ack n.%d dal server\n", count_ack);
 
   				memset(buffer, 0, sizeof(buffer));
 
@@ -656,11 +660,10 @@ WAIT:
 
   				if(result < 0) {
   					if(errno == EAGAIN || errno == EWOULDBLOCK) {
-  						printf("Timeout scaduto, eseguire RITRASMISSIONE\n");
 
   						//calcolo pacchetto dal quale riniziare la trasmissione
   						i = (value_ack / maxline);
-  						printf("ritrasmissione dal pacchetto n°.%d\n", i);
+  						printf("Timeout scaduto, RITRASMISSIONE da pack n°.%d\n", i);
 
   						//azzeramento delle variabili usate fino ad ora
   						fast_retransmit = 0;
@@ -694,11 +697,10 @@ WAIT:
   						fast_retransmit++;
 
   						if(fast_retransmit == 3) {
-  							printf("Ricevuti 3 ack duplicati, eseguire FAST RETRANSMIT\n");
 
   							//calcolo pacchetto dal quale inizia la ritrasmissione
   							i = (value_ack / maxline);
-  							printf("ritrasmissione dal pacchetto n°.%d\n", i);
+  							printf("3° ack duplicato, FAST RETRANSMIT da pack n°.%d\n", i);
 
   							//aggiorno le variabili locali
   							fast_retransmit = 0;
@@ -717,12 +719,14 @@ WAIT:
    		}
     }
 END:
-	printf("fine invio pacchetti al CLIENT\n\n");
+	printf("----File inviato nel SERVER con successo----\n\n");
 
 	//svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer)+1);
 }
  
+/*funzione utilizzata nel main per mettere in comunicazione il processo figlio del lato server
+con il processo appena creato del lato client*/
 void create_connection(char *buffer,int port_number) {
     int result;
 
@@ -745,6 +749,8 @@ void create_connection(char *buffer,int port_number) {
 	}
 }
 
+/*funzione per la gestione del timer associato al messaggio inviato e per
+l'eventuale gestione del segnale causato da un evento di timeout*/
 void setTimeout(double time, int id) {
 	struct timeval timeout;
 
@@ -754,6 +760,8 @@ void setTimeout(double time, int id) {
 	setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 }
 
+/*funzione per la creazione e invio di buffer contenenti il valore di ack
+da inviare all'altro processo comunicante*/
 void invio_ACK(int valore_ack) {
 	int result;
 

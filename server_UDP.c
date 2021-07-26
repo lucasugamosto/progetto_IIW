@@ -192,6 +192,8 @@ LOOP_RICHIESTE:
     return(0);
 }
 
+/*funzione utilizzata per la richiesta LIST. Consiste nel creare uno o più buffer
+contenenti i file presente nel server a cui si fa riferimento*/
 void func_list() {
 	int result;
 
@@ -238,6 +240,8 @@ void func_list() {
 	memset(buffer, 0, sizeof(buffer));
 }
 
+/*funzione utilizzata per la richiesta PUT. Permette di inserire un file inviato dal client
+all'interno del server, se e solo se il file è effettivamente presente nel client*/
 void func_put() {
 	int result;
 
@@ -257,6 +261,8 @@ void func_put() {
     printf("----File salvato nel SERVER con successo----\n\n");
 }
 
+/*funzione utilizzata per la richiesta GET. Permette di trasferire un file richiesto dal client
+che è presente all'interno del server*/
 void func_get() {
 	int result, fd;
 	int num_message;			//variabile per il numero di messaggi in cui viene diviso il file da inviare
@@ -420,8 +426,6 @@ void ricezione_GBN(int file_descriptor) {
 
 		while(i < num_message) {
 LOOP:
-            printf("\nValore di NUM_MESSAGE: %d\n", num_message);
-            printf("Valore di LUNGHEZZA_FILE:%d\n", lunghezza_file);
 
 			//ricezione del contenuto del messaggio i-esimo
 			result = recvfrom(sd_child, pack[i].message_buffer, maxline, 0, (struct sockaddr *)&sad, &len);
@@ -557,6 +561,8 @@ ACK_PERSO:
 		}
 		//chiusura del file descriptor associato al file creato
 		close(fd);
+
+        printf("----File salvato nel SERVER con successo----\n\n");
 	}
 	//svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer));
@@ -617,7 +623,7 @@ SEND:
             if(seq_window < N) {
             	//caso in cui la finestra di ricezione non è piena
 
-            	printf("stato di SEND -> invio pacchetto n. %d al client\n", i);
+            	printf("stato di SEND -> invio pacchetto n.%d al client\n", i);
 
             	//invio contenuto del file (pack[i].message_buffer) al client
             	result = sendto(sd_child, pack[i].message_buffer, (strlen(pack[i].message_buffer)+1), 0, (struct sockaddr *)&sad, sizeof(sad));
@@ -653,7 +659,7 @@ SEND:
            	else {
            		//caso in cui la finestra di ricezione è piena
 WAIT:
-				printf("stato di WAIT -> attesa di ack n. %d dal client\n", count_ack);
+				printf("stato di WAIT -> attesa di ack n.%d dal client\n", count_ack);
 
   				memset(buffer, 0, sizeof(buffer));
 
@@ -665,11 +671,10 @@ WAIT:
 
   				if(result < 0) {
   					if(errno == EAGAIN || errno == EWOULDBLOCK) {
-  						printf("Timeout scaduto, eseguire RITRASMISSIONE\n");
 
   						//calcolo pacchetto dal quale riniziare la trasmissione
   						i = (value_ack / maxline);
-  						printf("ritrasmissione dal pacchetto n°.%d\n", i);
+  						printf("Timeout scaduto, RITRASMISSIONE da pack n°.%d\n", i);
 
   						//azzeramento delle variabili usate fino ad ora
   						fast_retransmit = 0;
@@ -703,11 +708,10 @@ WAIT:
   						fast_retransmit++;
 
   						if(fast_retransmit == 3) {
-  							printf("Ricevuti 3 ack duplicati, eseguire FAST RETRANSMIT\n");
 
   							//calcolo pacchetto dal quale inizia la ritrasmissione
   							i = (value_ack / maxline);
-  							printf("ritrasmissione dal pacchetto n°.%d\n", i);
+  							printf("3° ack duplicato, FAST RETRANSMIT da pack n°.%d\n", i);
 
   							//aggiorno le variabili locali
   							fast_retransmit = 0;
@@ -726,12 +730,14 @@ WAIT:
    		}
     }
 END:
-	printf("fine invio pacchetti al client\n");
+	printf("----File inviato nel CLIENT con successo----\n\n");
 
 	//svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer));
 }
 
+/*funzione utilizzata nel main per mettere in comunicazione il processo figlio del lato server
+con il processo appena creato del lato client*/
 int create_connection(int port) {
     int result, des;
 	
@@ -756,6 +762,8 @@ int create_connection(int port) {
 	return des;
 }
 
+/*funzione per la gestione del timer associato al messaggio inviato e per
+l'eventuale gestione del segnale causato da un evento di timeout*/
 void setTimeout(double time, int id) {
 	struct timeval timeout;
 
@@ -765,6 +773,8 @@ void setTimeout(double time, int id) {
 	setsockopt(sd_child, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 }
 
+/*funzione per la creazione e invio di buffer contenenti il valore di ack
+da inviare all'altro processo comunicante*/
 void invio_ACK(int valore_ack) {
 	int result;
 
