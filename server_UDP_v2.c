@@ -27,6 +27,8 @@
 #define N 4 						//dimensione dellafinestra di ricezione
 #define TIMEOUT 10000   			//tempo dopo il quale arriva il segnale di errore SIGALARM
 #define PROB_PERDITA 40				//probabilità di perdere i pacchetti (in percentuale)
+#define exit_code_client 1          //codice da inviare al server affinchè avvenga la chiusura della socket
+#define exit_code_server 2          //codice ricevuto dal server affinchè avvenga la chiusura della socket
 
 //struttura per la gestione del GO-BACK-N
 typedef struct message_struct {
@@ -37,18 +39,20 @@ typedef struct message_struct {
 int sd;				        		//socket descriptor
 int sd_child;         	 			//child socket descriptor
 int fd;								//file descriptor (per la funzione put)
-int lunghezza_file, len, num_message;			
+int lunghezza_file;                 //quantità di byte di cui si compone il file da trasferi
+int len;                            //variabile utilizzata per il calcolo della dimensione della struttura sockaddr
+int num_message;                    //numero di messaggi utili per trasferire completamente il file
 int port_number = 1025;				//inizializzato al primo numero di porta disponibile
 char buffer[maxline];				//buffer per l'inserimento di stringhe di invio/richiesta
 
 struct sockaddr_in sad;				//struttura per l'indirizzo IP locale e numero di porta locale
 struct dirent *dp;					//struttura per la gestione dei file del server
 
-int value_ack;
+int value_ack;                      //variabile che tiene conto dell'ultimo byte ricevuto con successo
 
 DIR *dir;							//descrittore del flusso di directory del server
 pid_t pid;							//variabile per la creazione del processo pid
-size_t val;
+size_t val;                         //variabile per la gestione delle funzioni riguardanti i file
 
 void func_list();
 void func_put();
@@ -58,16 +62,19 @@ void ricezione_GBN(int file_descriptor);
 int create_connection(int port);
 void setTimeout(double time, int id);
 void invio_ACK(int valore_ack);
+void exit_handler(int signo);
 
 int main(int argc, char *argv[]) {
 	int result;
-	int fd;							//file descriptor
+
+    //gestione del segnale collegato all'interruzione del processo per mezzo dell'utente
+    signal(SIGINT, exit_handler);
 
 	//creazione della socket per il processo server (usata solo per l'ascolto di richieste)
     sd = create_connection(standard_port);
 
 	//fase di attesa di richieste da parte dei client
-	printf("---server in attesa di richieste---\n");
+	printf("----Server in attesa di richieste----\n");
 
 	while(1) {
 		//svuotamento del buffer e calcolo grandessa della struttura sockaddr
@@ -77,27 +84,29 @@ int main(int argc, char *argv[]) {
 		//ricezione dell'esistenza dei nuovi processi client al server
 		result = recvfrom(sd, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
 		if(result == -1) {
-			perror("errore, ricezione richiesta (1) fallita\n");
+			perror("Errore, ricezione richiesta (1) fallita\n");
 			exit(-1);
 		} 
-		else if(result == 0) {         
+		else if(result == 0) {    
+            //svuotamento del buffer     
             memset(buffer, 0, sizeof(buffer));
 
+            printf("\nRicezione dell'esistenza del nuovo processo client\n\n");
+
             //inserimento del nuovo numero di porta nel buffer per l'invio al client
-            sprintf(buffer,"%d",port_number);
+            sprintf(buffer, "%d", port_number);
             
             //invio al client il nuovo numero di porta 
             result = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
             if(result == -1) {
-                perror("errore, invio risposta fallito\n");
+                perror("Errore, invio risposta fallito\n");
                 exit(-1);
             }
-            
             //creazione del processo figlio per la comunicazione col client
             pid = fork();
 
 			if(pid == -1) {
-				perror("errore, creazione processo figlio fallita\n");
+				perror("Errore, creazione processo figlio fallita\n");
 				exit(-1);
 			}
 			if(pid == 0) {
@@ -105,8 +114,8 @@ int main(int argc, char *argv[]) {
                 printf("processo figlio con pid: %d e numero di porta: %d in esecuzione\n",getpid(), port_number);
 				
 				//creazione della nuova socket per il processo figlio e chiusura di quella del processo padre
+                close(sd);
 				sd_child = create_connection(port_number);
-				close(sd);
                 
                 //inizio ricezione delle richieste in arrivo dal client
                 while(1) {
@@ -116,12 +125,32 @@ LOOP_RICHIESTE:
                     //ricezione del comando da far eseguire al server
                     result= recvfrom(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
                     if(result == -1){
-                        printf("errore, ricezione richiesta (2) fallito\n");
+                        printf("Errore, ricezione richiesta (2) fallito\n");
                         exit(-1);
+                    }
+                    //Controllo che nel buffer non ci sia il codice di uscita
+                    else if(atoi(buffer) == exit_code_client) {
+                        printf("\nClient ha smesso di funzionare\n");
+                        exit(-1);
+                    }
+                    //comando EXIT (chiusura della socket che mette in relazione i due processi)
+                    else if(strcmp("exit", buffer) == 0) {
+                        printf("\nClient ha richiesto uscita dalla connessione\n");
+
+                        result = close(sd_child);
+                        if(result == -1) {
+                            perror("Errore, chiusura connessione fallita\n");
+                            exit(-1);
+                        }
+                        else {
+                            printf("----Chiusura della connessione riuscita----\n");
+                            memset(buffer, 0, sizeof(buffer));
+                            exit(1);
+                        }
                     }
                     
                     //comando LIST (invio al client la lista dei file del server)
-                    if(strcmp("list", buffer) == 0) {
+                    else if(strcmp("list", buffer) == 0) {
                     	printf("\nLista dei file nel server richiesta\n");
                     	func_list();
                     }
@@ -136,6 +165,11 @@ LOOP_RICHIESTE:
                     		perror("errore, ricezione richiesta (3) fallita\n");
                     		exit(-1);
                     	}
+                        //Controllo che nel buffer non ci sia il codice di uscita
+                        else if(atoi(buffer) == exit_code_client){
+                            printf("\nClient ha smesso di funzionare\n");
+                            exit(1);
+                        }
                     	else if(result == 0) {
                     		//caso in cui il file non è presente nel client
                     		goto LOOP_RICHIESTE;
@@ -154,19 +188,27 @@ LOOP_RICHIESTE:
                     	//ricezione del nome del file da scrivere sul client
                     	result = recvfrom(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
                     	if(result == -1) {
-                        	perror("errore, ricezione del nome file fallito\n");
+                        	perror("Errore, ricezione del nome file fallito\n");
                         	exit(-1);
                     	}
+                        //Controllo che nel buffer non ci sia il codice di uscita
+                        else if(atoi(buffer) == exit_code_client){
+                            printf("\nClient ha smesso di funzionare\n");
+                            exit(1);
+                        }
                     	else {
                     		printf("\nLettura di un file del server richiesta\n");
                     		func_get();
                         }
                     }
+                    //aspetto un secondo prima di chiudere il socket, attendo di inviare e ricevere tutto
+                    sleep(0.5);
 
-                    sleep(1); //aspetto un secondo prima di chiudere il socket, attendo di inviare e ricevere tutto
                     //ad ogni richiesta viene aperta e chiusa la connessione con il client
                     close(sd_child);
                     sd_child = create_connection(port_number);
+
+                    goto LOOP_RICHIESTE;
                 } 
             }
             else {
@@ -186,7 +228,7 @@ LOOP_RICHIESTE:
         else {
         	//caso result > 0 (ricezione di un buffer non vuoto)
         	//in questo caso non si riceve la comunicazione della presenza di un nuovo client
-            printf("errore, ricezione presenza del client fallito\n");
+            printf("Errore, ricezione presenza del client fallito\n");
             continue; 
         }
     }
@@ -203,12 +245,12 @@ void func_list() {
 
 	//apertura della directory e controllo dei file presenti in essa
 	if ((dir = opendir ("server UDP")) == NULL) { 
-        perror ("errore, lettura file nel server fallita\n");
+        perror ("Errore, lettura file nel server fallita\n");
         exit (-1);
     }
 	
 	//lettura della directory contenente i nomi dei file del server		
-	while ((dp = readdir (dir)) != NULL) {
+	while ((dp = readdir(dir)) != NULL) {
 		if(dp->d_type == DT_REG) {
 
 			//inserimento del file i-esimo all'interno del buffer
@@ -219,16 +261,13 @@ void func_list() {
 				//quando il buffer è pieno lo si invia al client e si svuota
     			result = sendto(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
 				if(result == -1) {
-					perror("errore, invio risposta (2) fallito\n");
+					perror("Errore, invio risposta (2) fallito\n");
 					exit(-1);
 				}
 				memset(buffer,0,sizeof(buffer));
 			}			
     	}        				
     }
-    //chiusura della directory dir
-    closedir(dir);
-
     if(strlen(buffer) > 0) {
     	//invio della risposta al client che ne ha fatto richiesta
 		result = sendto(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
@@ -239,6 +278,9 @@ void func_list() {
     }
     //svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer));
+
+    //chiusura della directory dir
+    closedir(dir);
 }
 
 /*funzione utilizzata per la richiesta PUT. Permette di inserire un file inviato dal client
@@ -249,7 +291,7 @@ void func_put() {
 	//creazione del file da ricevere dal client sul server
 	fd = open(buffer, O_CREAT|O_RDWR|O_TRUNC, 0666);
 	if(fd == -1) {
-		perror("errore, creazione file fallita\n");
+		perror("Errore, creazione file fallita\n");
 		exit(-1);
 	}
 
@@ -265,8 +307,7 @@ void func_put() {
 /*funzione utilizzata per la richiesta GET. Permette di trasferire un file richiesto dal client
 che è presente all'interno del server*/
 void func_get() {
-	int result, fd;
-	int num_message;			//variabile per il numero di messaggi in cui viene diviso il file da inviare
+	int result;
 	char *pathname;				//variabile per il percorso del file da cercare e inviare
 
 	//allocazione di memoria per la creazione del percorso del file
@@ -278,12 +319,12 @@ void func_get() {
 
 	//apertura della directory e controllo dei file presenti in essa
 	if ((dir = opendir ("server UDP")) == NULL) {
-    	perror ("errore, lettura file nel server fallita\n");
+    	perror ("Errore, lettura file nel server fallita\n");
         exit (-1);
     }
     //si è inizializzata la variabile result a 0
-    //se result = 0: file non presente nel server
-    //se result = 1: file presente nel server
+    //se alla fine result = 0: file non presente nel server
+    //se alla fine result = 1: file presente nel server
 	result = 0;
 
 	while ((dp = readdir (dir)) != NULL) {				//lettura della directory contenente i nomi dei file
@@ -299,7 +340,7 @@ void func_get() {
         	//apertura del file richiesto per la lettura
         	fd = open(pathname, O_RDONLY, 0666);
         	if(fd == -1) {
-            	perror("errore, apertura del file fallita\n");
+            	perror("Errore, apertura del file fallita\n");
             	exit(-1);
         	}
         	free(pathname);
@@ -314,7 +355,7 @@ void func_get() {
             //invio la lunghezza del file al client
             result = sendto(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
             if(result == -1) {
-            	perror("errore, invio del numero di pacchetti fallito\n");
+            	perror("Errore, invio della lunghezza del file fallito\n");
             	exit(-1);
             }
 
@@ -322,16 +363,16 @@ void func_get() {
             lseek(fd, 0, SEEK_SET);
 
             //calcolo il numero di pacchetti da dover inviare al client
-            num_message = ceil(lunghezza_file/maxline)+1;
+            num_message = (lunghezza_file / maxline) + 1;
 
             //inserimento nel buffer del numero di pacchetti da inviare al client
-            memset(buffer, 0, sizeof(buffer));			//svuotamento del buffer
+            memset(buffer, 0, sizeof(buffer));
             sprintf(buffer, "%d", num_message);
 
             //invio il numero di pacchetti al client
             result = sendto(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
             if(result == -1) {
-            	perror("errore, invio del numero di pacchetti fallito\n");
+            	perror("Errore, invio del numero di pacchetti fallito\n");
             	exit(-1);
             }
 
@@ -356,24 +397,23 @@ void func_get() {
     		//chiusura del descrittore del file e della directory dir
             close(fd);
             closedir(dir);
+
             goto END;
         }
     }
 END:
-    
     if(result == 0) {
         /*caso in cui il file non è presente nel server e viene inviato un buffer vuoto
         per indicare al client la non presenza del file richiesto*/
 
-        printf("file richiesto non presente nel server\n");
+        printf("File richiesto non presente nel server\n");
 
         result = sendto(sd_child, NULL, 0, 0, (struct sockaddr *)&sad, sizeof(sad));
         if(result == -1) {
-            perror("errore, invio risposta (3) fallito\n");
+            perror("Errore, invio risposta (3) fallito\n");
             exit(-1);
         }
     }
-    
     //svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer));
 }
@@ -381,14 +421,13 @@ END:
 /*funzione utilizzata da 'func_put' per inserire il file ricevuto dal client nel server e per inviare al client
 informazioni sullo stato degli ack*/
 void ricezione_GBN(int file_descriptor) {
-    int seq_window = 0;
-    int valore_atteso = 0;				//valore dell'ultimo byte letto del messaggio atteso
-    int lastAckCorrect = 0;				//valore ack dell'ultimo byte ricevuto in ordine
-    int prob_rvd_file;					//probabilità di ricezione del pacchetto dal server
-    int lastByteReceived = 0;			//valore dell'ultimo byte dell'ultimo messaggio ricevuto
-    int count_retransmit = 0;			//variabile per il conteggio delle ritrasmissioni effettuate
-    int i, result;
-    time_t t;							//variabile per la generazione del valore randomico
+    int valore_atteso = 0;              //valore che ci si aspetta dal prossimo pacchetto arrivato affinchè sia in ordine
+    int lastAckCorrect = 0;             //valore del byte immediatamente successivo da scaricare
+    int prob_rvd_file;                  //probabilità di ricezione del pacchetto dalla rete
+    int lastByteReceived = 0;           //valore dell'ultimo byte dell'ultimo messaggio ricevuto
+    int result, i;
+    int count_retransmit = 0;           //variabile per il conteggio delle ritrasmissioni effettuate
+    time_t t;                           //variabile per la generazione del valore randomico della probabilità
 
     //inizializzazione del genereatore di numeri random
     srand((unsigned) time(&t));
@@ -399,8 +438,13 @@ void ricezione_GBN(int file_descriptor) {
     //ricezione della lunghezza del file da ricevere
     result = recvfrom(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
     if(result == -1) {
-    	perror("errore, ricezione lunghezza del file fallito\n");
+    	perror("Errore, ricezione lunghezza del file fallito\n");
     	exit(-1);
+    }
+    //Controllo che nel buffer non ci sia il codice di uscita
+    else if(atoi(buffer) == exit_code_client) {
+        printf("\nClient ha smesso di funzionare\n");
+        exit(1);
     }
     //lunghezza del file da ricevere dal client
     lunghezza_file = atoi(buffer);
@@ -411,8 +455,13 @@ void ricezione_GBN(int file_descriptor) {
     //ricezione del numero di messaggi da ricevere in totale
     result = recvfrom(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
     if(result == -1) {
-    	perror("errore, ricezione numero di pacchetti fallito\n");
+    	perror("Errore, ricezione numero di pacchetti fallito\n");
     	exit(-1);
+    }
+    //Controllo che nel buffer non ci sia il codice di uscita
+    else if(atoi(buffer) == exit_code_client){
+        printf("\nClient ha smesso di funzionare\n");
+        exit(1);
     }
     else {
     	//salvo nella variabile 'num_message' il numero di messaggi da ricevere
@@ -435,11 +484,10 @@ void ricezione_GBN(int file_descriptor) {
 
 		while(i < num_message) {
 LOOP:
-
 			//ricezione del contenuto del messaggio i-esimo
 			result = recvfrom(sd_child, pack[i].message_buffer, maxline, 0, (struct sockaddr *)&sad, &len);
 			if(result == -1) {
-				perror("errore, ricezione messaggio di risposta fallita\n");
+				perror("Errore, ricezione messaggio di risposta fallita\n");
 				exit(-1);
 			}
 			else {
@@ -448,16 +496,21 @@ LOOP:
 				//ricezione dell'ultimo byte di cui si compone il messaggio da ricevere
 				result = recvfrom(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, &len);
 				if(result == -1) {
-					perror("errore, ricezione ultimo byte del messaggio fallito\n");
+					perror("Errore, ricezione ultimo byte del messaggio fallito\n");
 					exit(-1);
 				}
+                //Controllo che nel buffer non ci sia il codice di uscita
+                else if(atoi(buffer) == exit_code_client){
+                    printf("\nClient ha smesso di funzionare\n");
+                    exit(1);
+                }
 				else {
 					//salvataggio del valore dell'ultimo byte nella variabile dedicata
 					lastByteReceived = atoi(buffer);
 
 					printf("\nlastByteReceived: %d\n", lastByteReceived);
-
-					valore_atteso = (maxline * (i+1));		//valore dell'ultimo byte associato al messaggio i-esimo atteso
+                    //valore dell'ultimo byte associato al messaggio i-esimo atteso
+					valore_atteso = (maxline * (i + 1));
 
 					if(valore_atteso < lunghezza_file) {
 						//caso in cui si ricevono messaggi precedenti all'ultimo
@@ -473,16 +526,16 @@ LOOP:
 							if(prob_rvd_file < PROB_PERDITA) {
 								/*caso in cui si considera il messaggio non arrivato e quindi
 								non viene inviato nessun ack di risposta al server*/
-								printf("messaggio n°.%d PERSO\n", i);
+								printf("Messaggio n°.%d PERSO\n", i);
 
 								goto ACK_PERSO;
 							}
-							printf("messaggio n°.%d ARRIVATO\n", i);
+							printf("Messaggio n°.%d ARRIVATO\n", i);
 
 							//inserimento del messaggio i-esimo all'interno del file creato nel client
 							val = write(fd, pack[i].message_buffer, strlen(pack[i].message_buffer));
 							if(val == -1) {
-								perror("errore, scrittura sul file server fallita\n");
+								perror("Errore, scrittura sul file server fallita\n");
 								exit(-1);
 							}
 
@@ -501,11 +554,11 @@ LOOP:
 							//pacchetto arrivato con successo non è quello in ordine
 							//si scarta il pacchetto arrivato e si manda al client l'ack del pacchetto desiderato
 
-							if(lastByteReceived%maxline == 0) {
-								printf("messaggio n°.%d SCARTATO\n", (lastByteReceived/maxline)-1);
+							if(lastByteReceived % maxline == 0) {
+								printf("Messaggio n°.%d SCARTATO\n", (lastByteReceived / maxline) - 1);
 							}
-							else if(lastByteReceived%maxline > 0) {
-								printf("messaggio n°.%d SCARTATO\n", (lastByteReceived/maxline));
+							else if(lastByteReceived % maxline > 0) {
+								printf("Messaggio n°.%d SCARTATO\n", (lastByteReceived / maxline));
 							}
 							
 							//invio ack relativo all'ultimo messaggio ricevuto in ordine
@@ -529,7 +582,7 @@ LOOP:
 						if(prob_rvd_file < PROB_PERDITA) {
 							/*caso in cui si considera il messaggio non arrivato e quindi
 							non viene inviato nessun ack di risposta al server*/
-							printf("messaggio n°.%d PERSO\n", i);
+							printf("Messaggio n°.%d PERSO\n", i);
 
 							goto ACK_PERSO;
 						}
@@ -537,10 +590,10 @@ LOOP:
 						//inserimento del messaggio i-esimo all'interno del file creato nel client
 						val = write(fd, pack[i].message_buffer, strlen(pack[i].message_buffer));
 						if(val == -1) {
-							perror("errore, scrittura sul file client fallita\n");
+							perror("Errore, scrittura sul file client fallita\n");
 							exit(-1);
 						}
-						printf("messaggio n°.%d ARRIVATO\n", i);
+						printf("Messaggio n°.%d ARRIVATO\n", i);
 
 						//assegnazione del valore del successivo byte da inviare alla variabile di ack
 						lastAckCorrect = lastByteReceived + 1;
@@ -554,7 +607,7 @@ LOOP:
 			}
 ACK_PERSO:	
 			if(i == 0) {
-				//non invio nulla al client
+				//pacchetto perso è il primo -> non invio nulla al server
 				continue;
 			}
 			else {
@@ -581,12 +634,11 @@ ACK_PERSO:
 /*funzione utilizzata da 'func_get' per inviare alla funzione client il file da salvare nella propria cartella
 e per gestire la ricezione degli ack ricevuti dal client*/
 void invio_GBN(message *pack, int num_message, int fd, int lunghezza_file) {
-    int result;
-    int count_ack = 0;			//variabile che tiene traccia del numero di ack ricevuti
-    int seq_window = 0;			//variabile utilizzata per la gestione della finestra di ricezione
-    int fast_retransmit = 0;	//contatore che conta gli ack uguali
-    int ack_prev = 0;			//variabile utilizzata con fast_retransmit per conoscere il valore del precedente ack
-    int i;
+    int result, i;
+    int count_ack = 0;          //variabile che tiene traccia del numero di ack ricevuti
+    int seq_window = 0;         //variabile utilizzata per la gestione della finestra di ricezione
+    int fast_retransmit = 0;    //contatore che conta gli ack uguali
+    int ack_prev = 0;           //variabile utilizzata con fast_retransmit per conoscere il valore del precedente ack
 
     /*lettura ed inserimento dei dati del file nella sezione message_buffer
     e valore dell'ultimo byte letto nella sezione message_pointer*/
@@ -595,7 +647,7 @@ void invio_GBN(message *pack, int num_message, int fd, int lunghezza_file) {
     	val = read(fd, pack[i].message_buffer, maxline);
 
     	if(val == -1) {
-            perror("errore, lettura dei dati del file fallita\n");
+            perror("Errore, lettura dei dati del file fallita\n");
             exit(-1);
         }
         else {
@@ -636,13 +688,13 @@ SEND:
             if(seq_window < N) {
             	//caso in cui la finestra di ricezione non è piena
 
-            	printf("stato di SEND -> invio pacchetto n.%d al client\n", i);
+            	printf("Stato di SEND -> invio pacchetto n.%d al client\n", i);
 
             	//invio contenuto del file (pack[i].message_buffer) al client
-            	result = sendto(sd_child, pack[i].message_buffer, (strlen(pack[i].message_buffer)+1), 0, (struct sockaddr *)&sad, sizeof(sad));
+            	result = sendto(sd_child, pack[i].message_buffer, strlen(pack[i].message_buffer), 0, (struct sockaddr *)&sad, sizeof(sad));
 
             	if(result == -1) {
-            		perror("errore, invio messaggio al client (1) fallito\n");
+            		perror("Errore, invio messaggio al client (1) fallito\n");
             		exit(-1);
             	}
             	else {
@@ -653,7 +705,7 @@ SEND:
   					result = sendto(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
 
   					if(result == -1) {
-  						perror("errore, invio messaggio al client (2) fallito\n");
+  						perror("Errore, invio messaggio al client (2) fallito\n");
   						exit(-1);
             		}
             		else {
@@ -672,7 +724,7 @@ SEND:
            	else {
            		//caso in cui la finestra di ricezione è piena
 WAIT:
-				printf("stato di WAIT -> attesa di ack n.%d dal client\n", count_ack);
+				printf("Stato di WAIT -> attesa di ack n.%d dal client\n", count_ack);
 
   				memset(buffer, 0, sizeof(buffer));
 
@@ -697,6 +749,11 @@ WAIT:
   						goto SEND;
   					}
   				}
+                //Controllo che nel buffer non ci sia il codice di uscita
+                else if(atoi(buffer) == exit_code_client){
+                    printf("\nClient ha smesso di funzionare\n");
+                    exit(1);
+                }
   				else {
   					//ack ricevuto con successo, controllo il suo valore
   					value_ack = atoi(buffer);
@@ -757,7 +814,7 @@ int create_connection(int port) {
 	//creazione della socket per la comunicazione con il processo client
 	des = socket(AF_INET, SOCK_DGRAM, 0);
 	if(des == -1) {
-		perror("errore, creazione socket fallita\n");
+		perror("Errore, creazione socket fallita\n");
 		exit(-1);
 	}
 
@@ -769,7 +826,7 @@ int create_connection(int port) {
 	
 	result = bind(des, (struct sockaddr *)&sad, sizeof(sad));
 	if(result == -1) {
-		perror("errore, inizializzazione processo locale fallita\n");
+		perror("Errore, inizializzazione processo locale fallita\n");
 		exit(-1);
 	}
 	return des;
@@ -797,11 +854,41 @@ void invio_ACK(int valore_ack) {
 	//invio ack per conferma dell'ordine corretto di arrivo dei pacchetti al server
 	result = sendto(sd_child, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
 	if(result == -1) {
-		perror("errore, invio dell'ack al client fallito\n");
+		perror("Errore, invio dell'ack al client fallito\n");
 		exit(-1);
 	}
 	else {
 		//svuotamento del buffer
 		memset(buffer, 0, sizeof(buffer));
 	}
+}
+
+/*funzione per la gestione del segnale e invio dello stesso al client affinchè
+possa chiudersi da entrambi i lati la connessione socket creata*/
+void exit_handler(int signo) {
+    int res;
+
+    printf("\nSegnale di interruzione generato dall'utente\n");
+
+    //svuotamento del buffer
+    memset(buffer, 0, sizeof(buffer));
+
+    //invio al server il buffer contenente un codice per terminare il processo
+    sprintf(buffer, "%d", exit_code_server);
+    
+    res = sendto(sd, buffer, maxline, 0, (struct sockaddr *)&sad, sizeof(sad));
+    if(res == -1) {
+        perror("Errore, invio codice terminazione fallito\n");
+        exit(-1);
+    }
+    else {
+        //chiusura della socket
+        close(sd_child);
+        close(sd);
+        printf("Chiusura di tutte le socket associate ai vari processi client\n");
+
+        //svuotamento della memoria
+        memset(buffer, 0, sizeof(buffer));
+        exit(1);
+    }
 }
