@@ -130,7 +130,7 @@ LOOP_RICHIESTE:
                     }
                     //Controllo che nel buffer non ci sia il codice di uscita
                     else if(atoi(buffer) == exit_code_client) {
-                        printf("\nClient ha smesso di funzionare\n");
+                        printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
                         exit(-1);
                     }
                     //comando EXIT (chiusura della socket che mette in relazione i due processi)
@@ -167,7 +167,7 @@ LOOP_RICHIESTE:
                     	}
                         //Controllo che nel buffer non ci sia il codice di uscita
                         else if(atoi(buffer) == exit_code_client){
-                            printf("\nClient ha smesso di funzionare\n");
+                            printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
                             exit(1);
                         }
                     	else if(result == 0) {
@@ -193,7 +193,7 @@ LOOP_RICHIESTE:
                     	}
                         //Controllo che nel buffer non ci sia il codice di uscita
                         else if(atoi(buffer) == exit_code_client){
-                            printf("\nClient ha smesso di funzionare\n");
+                            printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
                             exit(1);
                         }
                     	else {
@@ -443,7 +443,7 @@ void ricezione_GBN(int file_descriptor) {
     }
     //Controllo che nel buffer non ci sia il codice di uscita
     else if(atoi(buffer) == exit_code_client) {
-        printf("\nClient ha smesso di funzionare\n");
+        printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
         exit(1);
     }
     //lunghezza del file da ricevere dal client
@@ -460,7 +460,7 @@ void ricezione_GBN(int file_descriptor) {
     }
     //Controllo che nel buffer non ci sia il codice di uscita
     else if(atoi(buffer) == exit_code_client){
-        printf("\nClient ha smesso di funzionare\n");
+        printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
         exit(1);
     }
     else {
@@ -501,7 +501,7 @@ LOOP:
 				}
                 //Controllo che nel buffer non ci sia il codice di uscita
                 else if(atoi(buffer) == exit_code_client){
-                    printf("\nClient ha smesso di funzionare\n");
+                    printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
                     exit(1);
                 }
 				else {
@@ -751,7 +751,7 @@ WAIT:
   				}
                 //Controllo che nel buffer non ci sia il codice di uscita
                 else if(atoi(buffer) == exit_code_client){
-                    printf("\nClient ha smesso di funzionare\n");
+                    printf("\nClient ha smesso di funzionare (sd_child:%d)\n", sd_child);
                     exit(1);
                 }
   				else {
