@@ -1,2 +1,2 @@
 # progetto_IIW
-trasferimento file su UDP (con go-back-n)
+trasferimento file su UDP (con go-back-n).
