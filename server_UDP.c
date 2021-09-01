@@ -24,10 +24,10 @@
 
 #define standard_port 1024			   //porta iniziale assunta da ogni client che si collega al server
 #define maxline 512 				   //dimensione massima dei messaggi inviati e ricevuti
-#define N 4 						   //dimensione dellafinestra di ricezione
+#define N 4						   //dimensione dellafinestra di ricezione
 #define exit_code_client 1             //codice da inviare al server affinchè avvenga la chiusura della socket
 #define exit_code_server 2             //codice ricevuto dal server affinchè avvenga la chiusura della socket
-#define PROB_PERDITA 50                //probabilità di perdita del pacchetto nella rete
+#define PROB_PERDITA 10                //probabilità di perdita del pacchetto nella rete
 #define STATIC_TIMEOUT 5000            //tempo dopo il quale arriva il segnale di errore SIGALRM
 
 //struttura per la gestione del GO-BACK-N
@@ -57,7 +57,7 @@ DIR *dir;							   //descrittore del flusso di directory del server
 pid_t pid;							   //variabile per la creazione del processo pid
 size_t val;                            //variabile per la gestione delle funzioni riguardanti i file
 clock_t start_time[N], end_time[N];    //variabili utilizzate per inizializzare e terminare il conteggio del tempo
-clock_t start_Bench, end_Bench;        //variabili utilizzate per la valutazione del tempo di esecuzione della funzione
+struct timeval  tv1, tv2, tv3, tv4;        //variabili utilizzate per la valutazione del tempo di esecuzione della funzione
 double sample_RTT;                     //variabile contenente la differenza di tempo tra invio/ricezione pacchetto
 double estimated_RTT = 0;
 double dev_RTT = 0;
@@ -509,7 +509,7 @@ void ricezione_GBN(int file_descriptor) {
 		i = 0;
         
         //inizio conteggio tempo 
-        start_Bench = clock();
+        gettimeofday(&tv3, NULL);
 
 		while(i < num_message) {
 LOOP:
@@ -660,10 +660,9 @@ ACK_PERSO:
 	//svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer));
     
-    //stampo tempo esecuzione
-    end_Bench = clock();
+    gettimeofday(&tv4, NULL);//fermo il timer
     
-    printf("Tempo di esecuzione - %f secondi\n",((double)(end_Bench - start_Bench))/CLOCKS_PER_SEC);
+	printf("Downlaod total time = %f seconds\n\n",(double) (tv4.tv_usec - tv3.tv_usec) / 1000000 +(double) (tv4.tv_sec - tv3.tv_sec));
 }
 
 /*funzione utilizzata da 'func_get' per inviare alla funzione client il file da salvare nella propria cartella
@@ -703,7 +702,7 @@ void invio_GBN(message *pack, int num_message, int fd, int lunghezza_file) {
     i = 0;
     
     //inizio conteggio tempo 
-    start_Bench = clock();
+    gettimeofday(&tv3, NULL);
 
     while(1) {
 SEND:	
@@ -899,10 +898,9 @@ END:
 	//svuotamento del buffer
 	memset(buffer, 0, sizeof(buffer));
     
-        //stampo tempo esecuzione
-    end_Bench = clock();
+    gettimeofday(&tv4, NULL);//fermo il timer
     
-    printf("Tempo di esecuzione - %f secondi\n",((double)(end_Bench - start_Bench))/CLOCKS_PER_SEC);
+	printf("Downlaod total time = %f seconds\n\n",(double) (tv4.tv_usec - tv3.tv_usec) / 1000000 +(double) (tv4.tv_sec - tv3.tv_sec));
 }
 
 /*funzione utilizzata nel main per mettere in comunicazione il processo figlio del lato server
